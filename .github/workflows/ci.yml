@@ -1,55 +1,51 @@
-name: CI
+name: Deploy MiroTalk with Cloudflare Quick Tunnel
 
 on:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
 
 jobs:
-  test:
-    runs-on: ubuntu-22.04 # LTS
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
         with:
-          node-version: '22.x'  # LTS
+          node-version: '22.x'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Create config from template
-        run: cp app/src/config.template.js app/src/config.js
+      - name: Prepare config files
+        run: |
+          cp .env.template .env
+          test -f app/src/config.js || cp app/src/config.template.js app/src/config.js
 
-      - name: Run unit tests
-        run: npm test
+      - name: Start MiroTalk and Cloudflare Tunnel
+        run: |
+          echo "▶ Starting MiroTalk..."
+          nohup npm start > mirotalk.log 2>&1 &
+          echo $! > mirotalk.pid
 
-  build:
-    runs-on: ubuntu-22.04 # LTS
-    needs: test  # This ensures the build job only runs if the test job succeeds
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+          sleep 15
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+          if ! kill -0 $(cat mirotalk.pid) 2>/dev/null; then
+            echo "❌ MiroTalk failed to start. Logs:"
+            cat mirotalk.log
+            exit 1
+          fi
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+          echo "✅ MiroTalk is running on port 3000"
+          tail -n 20 mirotalk.log
 
-      - name: Login Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
+          echo "▶ Installing cloudflared..."
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
 
-      - name: Build and publish
-        uses: docker/build-push-action@v6
-        with:
-          context: ./
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: mirotalk/p2p:latest
+          echo "▶ Starting Cloudflare Quick Tunnel..."
+          cloudflared tunnel --url http://localhost:3000
