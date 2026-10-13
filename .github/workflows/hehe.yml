@@ -1,12 +1,12 @@
 name: Deploy MiroTalk with Cloudflare Quick Tunnel
 
 on:
-  workflow_dispatch:   # امکان اجرای دستی از تب Actions
+  workflow_dispatch:   # اجرای دستی از تب Actions
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # حداکثر ۶ ساعت (محدودیت GitHub Actions)
+    timeout-minutes: 350   # حدود ۵ ساعت و ۵۰ دقیقه (حداکثر مجاز ۳۶۰ دقیقه)
 
     steps:
       - name: Checkout repository
@@ -15,32 +15,39 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'   # MiroTalk با Node.js 20 سازگاره
+          node-version: '24'   # یا '22.22.2' — حتماً ۲۲.۲۲.۲ یا بالاتر
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Create config files from templates
+      - name: Start MiroTalk and Cloudflare Tunnel
         run: |
+          # آماده‌سازی فایل‌های تنظیمات
           cp .env.template .env
-          cp app/src/config.template.js app/src/config.js
+          test -f app/src/config.js || cp app/src/config.template.js app/src/config.js
 
-      - name: Start MiroTalk server (background)
-        run: |
-          npm start &
-          # چند ثانیه صبر می‌کنیم تا سرور کامل بالا بیاد
-          sleep 10
-          # بررسی اینکه سرور روی پورت ۳۰۰۰ در حال اجراست
-          curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 || true
+          echo "▶ Starting MiroTalk..."
+          nohup npm start > mirotalk.log 2>&1 &
+          echo $! > mirotalk.pid
 
-      - name: Install cloudflared
-        run: |
+          # کمی صبر تا سرور بالا بیاید
+          sleep 15
+
+          # بررسی اینکه سرور واقعاً در حال اجراست
+          if ! kill -0 $(cat mirotalk.pid) 2>/dev/null; then
+            echo "❌ MiroTalk failed to start. Logs:"
+            cat mirotalk.log
+            exit 1
+          fi
+
+          echo "✅ MiroTalk is running on port 3000"
+
+          # نصب cloudflared
+          echo "▶ Installing cloudflared..."
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb
 
-      - name: Start Cloudflare Quick Tunnel
-        run: |
-          # این دستور یک URL موقت *.trycloudflare.com تولید می‌کنه
+          # اجرای تونل سریع Cloudflare
+          echo "▶ Starting Cloudflare Quick Tunnel..."
           cloudflared tunnel --url http://localhost:3000
-        # این مرحله تا زمانی که workflow لغو نشه یا timeout بخوره اجرا می‌مونه
-        # و خروجی اون شامل آدرس trycloudflare.com خواهد بود
